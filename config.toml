@@ -1,0 +1,70 @@
+[system]
+# Default CPU thread count; set to 0 to auto-detect
+threads = 6
+# Show tqdm progress bars by default
+show_progress = true
+
+[train]
+epochs = 20
+batch_size = 64
+learning_rate = 0.001
+
+[data]
+# Canonical dataset format: NPZ with keys X:[N,C,L], y:[N,4]; regimes optional
+train_x = "data/dataset_labeled.npz"
+train_y = "data/dataset_labeled.npz"
+val_x = "data/dataset_labeled.npz"
+val_y = "data/dataset_labeled.npz"
+
+[labeler]
+pattern_zone = 80
+k_impulse_min = 15
+k_impulse_max = 40
+impulse_min_move_pct = 0.05
+impulse_vol_mult = 2.0
+flag_min_bars = 12
+flag_max_bars = 25
+flag_max_range_pct = 0.02
+flag_std_rel_max = 0.6
+ema_flat_slope_max = 0.002
+flag_vol_rel_max = 0.6
+breakout_min_pct = 0.015
+breakout_max_lookahead = 20
+breakout_vol_mult = 2.0
+retest_window_pullback = 15
+retest_window_reclaim = 12
+retest_atr_tolerance = 0.5
+reclaim_min_pct = 0.01
+continuation_window = 20
+continuation_min_pct = 0.02
+min_head_prevalence = 0.01
+max_head_prevalence = 0.05
+
+[checkpoint]
+model_path = "models/cnn_bullflag/checkpoints/cnn_v1.pt"
+
+[evaluate]
+# Whether to enable Grad-CAM during evaluation/inference by default
+enable_gradcam = true
+# Directory for metrics JSON (used by eval CLI)
+metrics_dir = "models/cnn_bullflag"
+
+[inference]
+input_dir = ""
+price_csv = ""
+window_len = 200
+stride = 1
+symbol = "BTCUSDT"
+timeframe = "30m"
+output_jsonl = "models/cnn_bullflag/outputs.jsonl"
+enable_gradcam = true
+
+[gallery]
+# Default gallery settings for scripts/plot_gallery.py
+top_n = 12
+sort_by = "sequence_score"  # one of: sequence_score, flag_prob, breakout_prob, retest_prob, continuation_prob
+output_dir = "models/cnn_bullflag/plots/gallery"
+
+[paths]
+# Where training saves eval arrays and logs (y_true.npy, y_probs.npy, training_log.json)
+eval_dir = "models/cnn_bullflag"

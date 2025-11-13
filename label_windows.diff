@@ -1,0 +1,578 @@
+--- a/scripts/label_windows.py
++++ b/scripts/label_windows.py
+@@ -1,153 +1,449 @@
+ #!/usr/bin/env python3
+ """
+-Rule-based labeling for BullFlag CNN training data.
+-
+-Loads dataset.npz, applies heuristics to label each window with 4 binary heads:
+-- flag: pattern present
+-- breakout: breakout detected
+-- retest: retest after breakout
+-- continuation: trend continuation
+-
+-Saves data/dataset_labeled.npz with real labels.
++Deterministic multi-head labeler for the BullFlag CNN dataset.
++
++Semantics implemented exactly as specified:
++- flag: bull flag consolidation in progress.
++- breakout: confirmed breakout 10-40 bars after a flag.
++- retest: pullback to breakout level within +/-0.5 ATR followed by momentum regain.
++- continuation: rally following a successful retest.
++
++Outputs data/dataset_labeled.npz with X, y, and optional regimes.
++Also updates config.toml [data] paths, prints label stats, and saves preview plots.
+ """
+ 
+ from __future__ import annotations
+ 
+ import argparse
++from dataclasses import dataclass
+ from pathlib import Path
++import sys
++from typing import Any, Dict, List, Optional, Tuple
+ 
+ import numpy as np
+ 
++# Ensure repository root is importable when running as a script.
++ROOT = Path(__file__).resolve().parents[1]
++if str(ROOT) not in sys.path:
++    sys.path.insert(0, str(ROOT))
++
+ from scripts._setup_path import add_project_root
+ 
+ add_project_root()
+ 
+-
+-def load_dataset(dataset_path: Path) -> tuple[np.ndarray, np.ndarray]:
+-    """Load X and y from NPZ."""
+-    data = np.load(dataset_path)
+-    X = data["X"]
+-    y = data["y"]
+-    return X, y
+-
+-
+-def label_window(window: np.ndarray) -> np.ndarray:
+-    """
+-    Apply heuristics to label a single window [C, L].
+-
+-    Channels: 0=open, 1=high, 2=low, 3=close, 4=volume, 5=ema20, 6=ema50,
+-              7=rsi14, 8=vol_std20, 9=vol_delta, 10=body_norm, 11=upper_wick_norm, 12=lower_wick_norm
+-    """
+-    # Extract key series
+-    close = window[3, :]  # close prices
+-    high = window[1, :]
+-    low = window[2, :]
+-    volume = window[4, :]
+-    ema20 = window[5, :]
+-    ema50 = window[6, :]
+-    rsi = window[7, :]
+-    vol_std = window[8, :]
+-
+-    L = window.shape[1]
+-
+-    # Initialize labels
+-    flag = 0
+-    breakout = 0
+-    retest = 0
+-    continuation = 0
+-
+-    # CONTINUATION: Linear regression slope of close
+-    if L >= 20:
+-        x = np.arange(L)
+-        slope = np.polyfit(x, close, 1)[0]
+-        threshold_up = np.std(close) * 0.001  # Small positive slope
+-        threshold_down = -threshold_up
+-        if slope > threshold_up:
+-            continuation = 1
+-        elif slope < threshold_down:
+-            continuation = 1  # Also mark downtrends as continuation for simplicity
+-
+-    # BREAKOUT: Check if close breaks above recent high
+-    if L >= 20:
+-        last_close = close[-1]
+-        prev_max = np.max(close[:-10])  # Max of first part
+-        breakout_pct = 0.005  # 0.5% breakout
+-        if last_close > prev_max * (1 + breakout_pct):
+-            breakout = 1
+-
+-    # RETEST: After breakout, check for dip back
+-    if breakout and L >= 50:
+-        last_20 = close[-20:]
+-        breakout_level = prev_max
+-        min_recent = np.min(last_20)
+-        max_recent = np.max(last_20)
+-        if min_recent < breakout_level * 1.002 and max_recent > breakout_level * 1.01:
+-            retest = 1
+-
+-    # FLAG: Low volatility, tight range
+-    if L >= 50:
+-        sub_close = close[-50:]
+-        sub_std = np.std(sub_close)
+-        sub_range = np.max(sub_close) - np.min(sub_close)
+-        mean_price = np.mean(sub_close)
+-        if sub_std / (mean_price + 1e-8) < 0.01 and sub_range / (mean_price + 1e-8) < 0.02:
+-            flag = 1
+-
+-    return np.array([flag, breakout, retest, continuation], dtype=np.int32)
+-
+-
+-def label_dataset(X: np.ndarray) -> np.ndarray:
+-    """Label all windows in dataset."""
+-    N = X.shape[0]
+-    y_labels = []
+-    for i in range(N):
+-        window = X[i]  # [C, L]
+-        labels = label_window(window)
+-        y_labels.append(labels)
+-    return np.array(y_labels, dtype=np.int32)
++# Use non-interactive backend before importing pyplot.
++import matplotlib
++
++matplotlib.use("Agg")
++import matplotlib.pyplot as plt
++
++
++CHANNELS = {
++    "open": 0,
++    "high": 1,
++    "low": 2,
++    "close": 3,
++    "volume": 4,
++    "ema20": 5,
++    "ema50": 6,
++}
++
++LABEL_NAMES = ("flag", "breakout", "retest", "continuation")
++
++
++@dataclass
++class LabelDiagnostics:
++    """Holds dependency indices for unit tests and debugging."""
++
++    flag_index: Optional[int]
++    breakout_index: Optional[int]
++    breakout_source_flag: Optional[int]
++    retest_index: Optional[int]
++    retest_source_breakout: Optional[int]
++    continuation_retest_index: Optional[int]
++
++
++def load_dataset(path: Path) -> Dict[str, np.ndarray]:
++    with np.load(path, allow_pickle=False) as data:
++        arrays = {k: data[k] for k in data.files}
++    return arrays
++
++
++def safe_log_returns(close: np.ndarray) -> np.ndarray:
++    safe_close = np.clip(close, 1e-8, None)
++    log_prices = np.log(safe_close)
++    return np.diff(log_prices)
++
++
++def linear_slope(values: np.ndarray) -> float:
++    n = values.size
++    if n <= 1:
++        return 0.0
++    x = np.arange(n, dtype=np.float64)
++    sum_x = np.sum(x)
++    sum_y = np.sum(values)
++    sum_x2 = np.dot(x, x)
++    sum_xy = np.dot(x, values)
++    denom = n * sum_x2 - sum_x * sum_x
++    if denom == 0:
++        return 0.0
++    return (n * sum_xy - sum_x * sum_y) / denom
++
++
++def rolling_mean(series: np.ndarray, window: int) -> np.ndarray:
++    result = np.full_like(series, np.nan, dtype=np.float64)
++    if series.size < window:
++        return result
++    cumsum = np.cumsum(series, dtype=np.float64)
++    prev = np.concatenate(([0.0], cumsum[:-window]))
++    result[window - 1 :] = (cumsum[window - 1 :] - prev) / window
++    return result
++
++
++def compute_atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
++    tr = np.maximum.reduce(
++        [
++            high - low,
++            np.abs(high - np.concatenate(([close[0]], close[:-1]))),
++            np.abs(low - np.concatenate(([close[0]], close[:-1]))),
++        ]
++    )
++    atr = np.full_like(close, np.nan, dtype=np.float64)
++    if close.size < period:
++        return atr
++    atr[period - 1] = np.mean(tr[:period])
++    for i in range(period, close.size):
++        atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
++    return atr
++
++
++def rate_of_change(close: np.ndarray, period: int = 10) -> np.ndarray:
++    roc = np.full_like(close, np.nan, dtype=np.float64)
++    if close.size <= period:
++        return roc
++    denom = close[:-period]
++    denom = np.where(np.abs(denom) < 1e-8, np.nan, denom)
++    roc[period:] = (close[period:] - close[:-period]) / denom
++    return roc
++
++
++def _flag_condition(
++    idx: int,
++    close: np.ndarray,
++    high: np.ndarray,
++    low: np.ndarray,
++    ema20: np.ndarray,
++    ema50: np.ndarray,
++    atr: np.ndarray,
++    log_returns: np.ndarray,
++) -> bool:
++    if idx < 60 or idx >= close.size:
++        return False
++    uptrend_slice = slice(idx - 39, idx + 1)
++    uptrend_ratio = np.mean(ema20[uptrend_slice] > ema50[uptrend_slice])
++    if uptrend_ratio < 0.6:
++        return False
++
++    atr_window = atr[idx - 19 : idx + 1]
++    if np.isnan(atr_window).any():
++        return False
++    if linear_slope(atr_window) >= 0:
++        return False
++
++    if idx < 40 or log_returns.size < idx:
++        return False
++    recent_returns = log_returns[idx - 20 : idx]
++    previous_returns = log_returns[idx - 40 : idx - 20]
++    if recent_returns.size < 20 or previous_returns.size < 20:
++        return False
++    std_prev = np.std(previous_returns)
++    if std_prev <= 0:
++        return False
++    std_recent = np.std(recent_returns)
++    std_drop = (std_prev - std_recent) / std_prev
++    if std_drop < 0.15:
++        return False
++
++    high_window = high[idx - 19 : idx + 1]
++    low_window = low[idx - 19 : idx + 1]
++    if linear_slope(high_window) >= 0 or linear_slope(low_window) >= 0:
++        return False
++
++    price_vs_ema50 = close[idx - 19 : idx + 1] - ema50[idx - 19 : idx + 1]
++    if np.min(price_vs_ema50) <= 0:
++        return False
++
++    return True
++
++
++def label_single_window(window: np.ndarray) -> Tuple[np.ndarray, LabelDiagnostics]:
++    high = window[CHANNELS["high"]].astype(np.float64)
++    low = window[CHANNELS["low"]].astype(np.float64)
++    close = window[CHANNELS["close"]].astype(np.float64)
++    volume = window[CHANNELS["volume"]].astype(np.float64)
++    ema20 = window[CHANNELS["ema20"]].astype(np.float64)
++    ema50 = window[CHANNELS["ema50"]].astype(np.float64)
++
++    L = close.size
++    log_returns = safe_log_returns(close)
++    atr = compute_atr(high, low, close, period=14)
++    volume_ma20 = rolling_mean(volume, 20)
++    roc10 = rate_of_change(close, 10)
++
++    flag_mask = np.zeros(L, dtype=bool)
++    flag_channel_high = np.full(L, np.nan, dtype=np.float64)
++    for idx in range(40, L):
++        if _flag_condition(idx, close, high, low, ema20, ema50, atr, log_returns):
++            flag_mask[idx] = True
++            start = max(0, idx - 19)
++            flag_channel_high[idx] = np.max(high[start : idx + 1])
++
++    breakout_mask = np.zeros(L, dtype=bool)
++    breakout_meta: Dict[int, Dict[str, Any]] = {}
++    for t in range(L):
++        if np.isnan(volume_ma20[t]) or volume_ma20[t] <= 0:
++            continue
++        if np.isnan(atr[t]) or atr[t] <= 0:
++            continue
++        for lag in range(10, 41):
++            flag_idx = t - lag
++            if flag_idx < 0:
++                continue
++            if not flag_mask[flag_idx]:
++                continue
++            channel_high = flag_channel_high[flag_idx]
++            if np.isnan(channel_high):
++                continue
++            if close[t] < channel_high + atr[t]:
++                continue
++            if volume[t] < 1.2 * volume_ma20[t]:
++                continue
++            breakout_mask[t] = True
++            breakout_meta[t] = {
++                "flag_index": flag_idx,
++                "channel_high": channel_high,
++                "breakout_level": close[t],
++                "atr_at_breakout": atr[t],
++            }
++            break
++
++    retest_mask = np.zeros(L, dtype=bool)
++    retest_meta: Dict[int, Dict[str, Any]] = {}
++    for t in range(L):
++        if t < 3:
++            continue
++        prev_closes = close[t - 3 : t]
++        if prev_closes.size < 3:
++            continue
++        for lag in range(5, 21):
++            breakout_idx = t - lag
++            if breakout_idx < 0:
++                continue
++            if not breakout_mask[breakout_idx]:
++                continue
++            bmeta = breakout_meta.get(breakout_idx)
++            if bmeta is None:
++                continue
++            pull_slice = slice(breakout_idx + 1, t + 1)
++            if pull_slice.start >= pull_slice.stop:
++                continue
++            pullback_lows = low[pull_slice]
++            atr_breakout = bmeta["atr_at_breakout"]
++            breakout_level = bmeta["breakout_level"]
++            lower_bound = breakout_level - 0.5 * atr_breakout
++            upper_bound = breakout_level + 0.5 * atr_breakout
++            within_band = np.any((pullback_lows >= lower_bound) & (pullback_lows <= upper_bound))
++            if not within_band:
++                continue
++            if not np.all(close[t] > prev_closes):
++                continue
++            retest_mask[t] = True
++            retest_meta[t] = {
++                "breakout_index": breakout_idx,
++                "breakout_high_ref": bmeta["channel_high"],
++            }
++            break
++
++    continuation_mask = np.zeros(L, dtype=bool)
++    continuation_meta: Dict[int, Dict[str, Any]] = {}
++    for t in range(L):
++        if t < 10:
++            continue
++        if ema20[t] <= ema50[t]:
++            continue
++        if np.isnan(roc10[t]) or roc10[t] <= 0:
++            continue
++        for lag in range(5, 41):
++            retest_idx = t - lag
++            if retest_idx < 0:
++                continue
++            if not retest_mask[retest_idx]:
++                continue
++            rmeta = retest_meta.get(retest_idx)
++            if rmeta is None:
++                continue
++            breakout_high = rmeta["breakout_high_ref"]
++            if np.isnan(breakout_high):
++                continue
++            if high[t] <= breakout_high:
++                continue
++            continuation_mask[t] = True
++            continuation_meta[t] = {
++                "retest_index": retest_idx,
++                "breakout_high_ref": breakout_high,
++            }
++            break
++
++    last_idx = L - 1
++    labels = np.array(
++        [
++            int(flag_mask[last_idx]),
++            int(breakout_mask[last_idx]),
++            int(retest_mask[last_idx]),
++            int(continuation_mask[last_idx]),
++        ],
++        dtype=np.int32,
++    )
++
++    diag = LabelDiagnostics(
++        flag_index=last_idx if flag_mask[last_idx] else None,
++        breakout_index=last_idx if breakout_mask[last_idx] else None,
++        breakout_source_flag=(
++            breakout_meta[last_idx]["flag_index"] if breakout_mask[last_idx] else None
++        ),
++        retest_index=last_idx if retest_mask[last_idx] else None,
++        retest_source_breakout=(
++            retest_meta[last_idx]["breakout_index"] if retest_mask[last_idx] else None
++        ),
++        continuation_retest_index=(
++            continuation_meta[last_idx]["retest_index"] if continuation_mask[last_idx] else None
++        ),
++    )
++
++    return labels, diag
++
++
++def label_dataset(
++    X: np.ndarray,
++    *,
++    return_diagnostics: bool = False,
++) -> Tuple[np.ndarray, Optional[List[LabelDiagnostics]]]:
++    labels = np.zeros((X.shape[0], len(LABEL_NAMES)), dtype=np.int32)
++    diagnostics: List[LabelDiagnostics] = []
++    for idx, window in enumerate(X):
++        label_vec, diag = label_single_window(window)
++        labels[idx] = label_vec
++        if return_diagnostics:
++            diagnostics.append(diag)
++    return labels, (diagnostics if return_diagnostics else None)
++
++
++def _plot_sample_windows(
++    X: np.ndarray,
++    y: np.ndarray,
++    sample_indices: np.ndarray,
++    out_path: Path,
++) -> None:
++    cols = 1
++    rows = sample_indices.size
++    fig, axes = plt.subplots(rows, cols, figsize=(10, 3 * rows), sharex=False)
++    if rows == 1:
++        axes = [axes]
++    for ax, idx in zip(axes, sample_indices):
++        window = X[idx]
++        close = window[CHANNELS["close"]]
++        ema20 = window[CHANNELS["ema20"]]
++        ema50 = window[CHANNELS["ema50"]]
++        ax.plot(close, label="close", linewidth=1.2)
++        ax.plot(ema20, label="ema20", linewidth=0.9)
++        ax.plot(ema50, label="ema50", linewidth=0.9)
++        label_text = ", ".join(
++            f"{name}={y[idx, i]}" for i, name in enumerate(LABEL_NAMES)
++        )
++        ax.set_title(f"Window {idx} | {label_text}")
++        ax.legend(loc="upper left", fontsize=8)
++    fig.tight_layout()
++    out_path.parent.mkdir(parents=True, exist_ok=True)
++    fig.savefig(out_path, dpi=150)
++    plt.close(fig)
++
++
++def update_config_paths(config_path: Path, dataset_relative: str) -> None:
++    lines = config_path.read_text().splitlines()
++    in_data = False
++    for i, line in enumerate(lines):
++        stripped = line.strip()
++        if stripped.startswith("[") and stripped.endswith("]"):
++            in_data = stripped == "[data]"
++            continue
++        if not in_data:
++            continue
++        if stripped.startswith("train_x"):
++            lines[i] = f'train_x = "{dataset_relative}"'
++        elif stripped.startswith("train_y"):
++            lines[i] = f'train_y = "{dataset_relative}"'
++        elif stripped.startswith("val_x"):
++            lines[i] = f'val_x = "{dataset_relative}"'
++        elif stripped.startswith("val_y"):
++            lines[i] = f'val_y = "{dataset_relative}"'
++    config_path.write_text("\n".join(lines) + "\n")
+ 
+ 
+ def main() -> None:
+-    parser = argparse.ArgumentParser(description="Label windows with rule-based heuristics")
+-    parser.add_argument("--dataset", type=str, default="data/dataset.npz", help="Input dataset NPZ")
+-    parser.add_argument("--out", type=str, default="data/dataset_labeled.npz", help="Output labeled NPZ")
++    parser = argparse.ArgumentParser(description="Deterministic rule-based labeling pipeline.")
++    parser.add_argument("--dataset", type=str, default="data/dataset.npz", help="Input dataset NPZ.")
++    parser.add_argument(
++        "--out", type=str, default="data/dataset_labeled.npz", help="Output labeled dataset path."
++    )
++    parser.add_argument(
++        "--preview",
++        type=str,
++        default="models/cnn_bullflag/plots/label_preview.png",
++        help="Preview plot path.",
++    )
++    parser.add_argument("--num-plots", type=int, default=5, help="Number of sample windows to plot.")
++    parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling plots.")
+     args = parser.parse_args()
+ 
+-    # Load
+     dataset_path = Path(args.dataset)
+-    if not dataset_path.exists():
+-        raise FileNotFoundError(f"Dataset {dataset_path} not found")
+-
+-    X, y_dummy = load_dataset(dataset_path)
+-    print(f"Loaded dataset: X {X.shape}, y {y_dummy.shape}")
+-
+-    # Label
+-    y_real = label_dataset(X)
+-    print(f"Labeled {len(y_real)} windows")
+-
+-    # Summary
+-    for i, head in enumerate(["flag", "breakout", "retest", "continuation"]):
+-        pos = np.sum(y_real[:, i])
+-        total = len(y_real)
+-        pct = pos / total * 100
+-        print(".1f")
+-
+-    # Save
+     out_path = Path(args.out)
++    preview_path = Path(args.preview)
++
++    arrays = load_dataset(dataset_path)
++    X = arrays["X"]
++    regimes = arrays.get("regimes")
++    print(f"Loaded dataset from {dataset_path} | X shape={X.shape}")
++
++    labels, _ = label_dataset(X, return_diagnostics=False)
++    assert labels.shape[0] == X.shape[0]
++    assert labels.shape[1] == len(LABEL_NAMES)
++    if np.isnan(labels).any():
++        raise ValueError("NaNs detected in labels.")
++
++    save_kwargs = {"X": X, "y": labels}
++    if regimes is not None:
++        save_kwargs["regimes"] = regimes
+     out_path.parent.mkdir(parents=True, exist_ok=True)
+-    np.savez(out_path, X=X, y=y_real, meta={
+-        "thresholds": {
+-            "slope_threshold": "std(close) * 0.001",
+-            "breakout_pct": 0.005,
+-            "retest_lower": 1.002,
+-            "retest_upper": 1.01,
+-            "flag_vol_threshold": 0.01,
+-            "flag_range_threshold": 0.02
+-        },
+-        "window_len": X.shape[2],
+-        "channels": X.shape[1]
+-    })
++    np.savez(out_path, **save_kwargs)
+     print(f"Saved labeled dataset to {out_path}")
++
++    totals = labels.sum(axis=0)
++    total_windows = labels.shape[0]
++    for i, name in enumerate(LABEL_NAMES):
++        count = int(totals[i])
++        pct = (count / total_windows) * 100
++        print(f"{name}: {count} positives ({pct:.2f}%)")
++        if count < 20:
++            print(f"WARNING: {name} positives below threshold (found {count})")
++
++    rng = np.random.default_rng(args.seed)
++    sample_count = min(args.num_plots, X.shape[0])
++    sample_indices = rng.choice(X.shape[0], size=sample_count, replace=False)
++    _plot_sample_windows(X, labels, sample_indices, preview_path)
++    print(f"Saved preview plot to {preview_path}")
++
++    update_config_paths(Path("config.toml"), dataset_relative=str(out_path).replace("\\", "/"))
++    print("Updated config.toml [data] paths.")
+ 
+ 
+ if __name__ == "__main__":

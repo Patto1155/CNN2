@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Data files (can be large)
+data/*.npz
+data/*.npy
+data/*.csv
+!data/.gitkeep
+
+# Model checkpoints and outputs
+models/**/*.pt
+models/**/*.pth
+models/**/checkpoints/*
+models/**/outputs.jsonl
+models/**/y_true.npy
+models/**/y_probs.npy
+models/**/training_log.json
+
+# Plots and visualizations (can regenerate)
+models/**/plots/**/*.png
+models/**/plots/**/*.jpg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Logs
+*.log
+

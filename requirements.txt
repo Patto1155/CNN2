@@ -1,0 +1,10 @@
+numpy>=1.22
+tqdm>=4.65
+requests>=2.31
+matplotlib>=3.8
+
+# Note: Install PyTorch separately for your platform
+# CPU-only example:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# CUDA 12.x example:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121

@@ -1,0 +1,13 @@
+Total windows: 25403
+Label Distribution:
+- flag: 0 (0.00%)
+- breakout: 0 (0.00%)
+- retest: 0 (0.00%)
+- continuation: 0 (0.00%)
+
+Dependencies:
+- Flags leading to breakouts: 0 (minimum gap n/a)
+- Breakouts leading to retests: 0 (minimum gap n/a)
+- Retests leading to continuations: 0 (minimum gap n/a)
+
+Heads outside 1-5% prevalence range: flag, breakout, retest, continuation (consider adjusting tolerances).
