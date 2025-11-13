@@ -1,185 +1,451 @@
-﻿TradingCNN â€” BullFlag CNN Metrics + Gradâ€‘CAM
+﻿# TradingCNN — Bull Flag Pattern Detection with CNN
 
-This repo contains a lightweight, endâ€‘toâ€‘end scaffold for evaluating a multiâ€‘head 1D CNN on trading windows, computing perâ€‘head metrics, and generating Gradâ€‘CAM activation maps for visual inspection.
+A complete end-to-end system for detecting bull flag patterns in cryptocurrency trading data using a multi-head 1D CNN. Includes per-head evaluation metrics, Grad-CAM visualization, data labeling pipeline, and a web dashboard for monitoring training progress.
 
-It includes:
-- Perâ€‘head metrics with optional perâ€‘regime breakdown
-- 1D Gradâ€‘CAM integration targeting a named conv layer
-- A standard JSON output schema for downstream apps
-- Smoke tests, reporting CLIs, and demo scripts
+## Objective
 
-If youâ€™re not familiar with PyTorch or Gradâ€‘CAM, the quickstart below walks you through running everything with a selfâ€‘contained model stub.
+This project implements a CNN-based system to detect sequential bull flag patterns in BTCUSDT 30-minute price data. The model predicts four sequential stages:
+1. **Flag** — Consolidation phase after an impulse move
+2. **Breakout** — Price breaks above flag resistance
+3. **Retest** — Pullback to breakout level with reclaim
+4. **Continuation** — Further upward movement after retest
 
-Quickstart (Bash)
+The system provides:
+- **Per-head metrics** to evaluate performance on each pattern stage
+- **Grad-CAM heatmaps** to visualize which time steps the model focuses on
+- **Rule-based labeling** pipeline for generating training data
+- **Web dashboard** for real-time training monitoring and visualization
 
-- Create and activate a virtual environment
-  - macOS/Linux
-    - `python3 -m venv .venv && source .venv/bin/activate`
-  - Windows (PowerShell)
-    - `python -m venv .venv; .venv\Scripts\Activate.ps1`
+## Quick Start
 
-- Upgrade pip
-  - `python -m pip install --upgrade pip`
+### Installation
 
-- Install dependencies
-  - Install NumPy and helpers from `requirements.txt`:
-    - `pip install -r requirements.txt`
-  - Install PyTorch (choose one):
-    - CPU only: `pip install torch --index-url https://download.pytorch.org/whl/cpu`
-    - CUDA 12.x: `pip install torch --index-url https://download.pytorch.org/whl/cu121`
-    - For other platforms: see https://pytorch.org/get-started/locally/
+1. **Create and activate virtual environment:**
+   ```bash
+   # macOS/Linux
+   python3 -m venv .venv && source .venv/bin/activate
+   
+   # Windows (PowerShell)
+   python -m venv .venv; .venv\Scripts\Activate.ps1
+   ```
 
-CPUâ€‘only (Intel 12thâ€‘gen) tips:
-- Your i5â€‘1235U (10C/12T) is fine for demos and light training.
-- Set PyTorch threads to a sensible value for CPU runs:
-  - In scripts, we default to up to 8 threads; you can tune via:
-    - `python scripts/cpu_tuning.py` (prints recommended torch.set_num_threads)
-  - You can also set env vars for BLAS libraries if needed:
-    - `set OMP_NUM_THREADS=8` (Windows) / `export OMP_NUM_THREADS=8` (bash)
-    - `set MKL_NUM_THREADS=8` (Windows) / `export MKL_NUM_THREADS=8` (bash)
+2. **Install dependencies:**
+   ```bash
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   
+   # Install PyTorch (choose one):
+   # CPU only
+   pip install torch --index-url https://download.pytorch.org/whl/cpu
+   
+   # CUDA 12.x
+   pip install torch --index-url https://download.pytorch.org/whl/cu121
+   ```
 
-- Run synthetic metrics (produces JSON metrics files)
-  - `python scripts/test_metrics_synthetic.py`
+3. **Configure settings:**
+   - Edit `config.toml` to set data paths, training hyperparameters, and model paths
+   - For CPU tuning: `python scripts/cpu_tuning.py` (recommends thread count)
 
-- Print metrics tables from saved JSON
-  - `python -m models.cnn_bullflag.report_metrics`
+### Basic Usage
 
-- Smokeâ€‘test Gradâ€‘CAM on a random window
-  - `python scripts/smoke_gradcam.py`
+**1. Gather and prepare data:**
+```bash
+# Download/generate BTCUSDT 30m data and create windows
+python scripts/gather_additional_data.py --source binance --limit 5000 --out data/dataset.npz
 
-- Generate demo JSONL outputs with activation maps and scores
-  - `python scripts/generate_cnn_output_demo.py`
+# Label windows with bull flag patterns
+python scripts/label_windows.py --progress
+```
 
-- Summarize top windows and activation hotspots
-  - `python scripts/analytics_demo.py`
+**2. Train the model:**
+```bash
+python scripts/train_real.py
+```
 
-- ASCII preview of activation map heat
-  - `python scripts/gradcam_ascii.py`
+**3. Run inference:**
+```bash
+python scripts/infer_real.py
+```
 
-- Simulate a full mock cycle (toy training, evaluation + metrics, Gradâ€‘CAM)
-  - `python scripts/full_cycle_mock.py` (add `--no-progress` to disable bars)
-  - Uses `config.toml` for defaults (e.g., threads, steps); CLI flags override
+**4. Evaluate metrics:**
+```bash
+python -m models.cnn_bullflag.eval_metrics \
+  --ytrue models/cnn_bullflag/y_true.npy \
+  --yprobs models/cnn_bullflag/y_probs.npy \
+  --output-dir models/cnn_bullflag
 
-- Optional: demo data download with progress bar
-  - `python scripts/download_demo_data.py`
-  
-- Optional: CPU tuning helper (finds good thread count)
-  - `python scripts/cpu_tuning.py`
-  - Update `config.toml` `[system].threads` with the recommended value (or run: `python scripts/full_cycle_mock.py --threads <n>`) 
+# View metrics tables
+python -m models.cnn_bullflag.report_metrics
+```
 
-If any script complains about imports, run it from the project root (where this README.md lives). You can also set `export PYTHONPATH=.` before running scripts.
+**5. Launch dashboard:**
+```bash
+python scripts/dashboard.py
+# Open http://localhost:5000 in your browser
+```
 
-Repository Map
+## Key Concepts
 
-- `utils/metrics.py` â€” metrics for single head, multiâ€‘head, perâ€‘regime
-- `models/cnn_bullflag/gradcam.py` â€” 1D Gradâ€‘CAM utility with hooks
-- `models/cnn_bullflag/model_stub.py` â€” minimal CNN with a named `conv4` layer (for demos)
-- `models/cnn_bullflag/infer.py` â€” inference wrapper, optional Gradâ€‘CAM, schema output
-  - Includes a batch helper with a tqdm progress bar
-- `models/cnn_bullflag/schema.py` â€” helper to build standard JSON payloads
-- `models/cnn_bullflag/eval_metrics.py` â€” compute + save metrics JSON
-- `models/cnn_bullflag/report_metrics.py` â€” CLI to print metrics tables
-- `scripts/` â€” smoke tests and demos (metrics, Gradâ€‘CAM, analytics, full cycle)
-  - Also contains download helpers with progress (`scripts/download_utils.py`)
-- `sequence_score_decision.md` â€” rationale for sequence score aggregation
+### Per-Head Metrics
 
-What The Outputs Look Like
+The model outputs probabilities for four heads: `flag`, `breakout`, `retest`, `continuation`. Per-head metrics help identify which pattern stages the model performs well on.
 
-`run_inference_batch` and `generate_cnn_output_demo.py` write JSON Lines to `models/cnn_bullflag/example_cnn_outputs.jsonl` with the following structure per window:
+**Metrics computed:**
+- **TP/FP/TN/FN** — Confusion matrix counts
+- **Precision** — TP / (TP + FP)
+- **Recall** — TP / (TP + FN)
+- **F1 Score** — Harmonic mean of precision and recall
+- **Accuracy** — (TP + TN) / Total
 
-- `window_id` / `symbol` / `tf` / `window_start_ts` / `window_end_ts`
-- `scores`:
-  - `flag_prob`, `breakout_prob`, `retest_prob`, `continuation_prob`
-  - `sequence_score` (geometric mean across heads)
-- `activation_map` (optional):
-  - `indices` (0..seq_lenâ€‘1)
-  - `intensities` (values in [0, 1])
-- `meta`:
-  - `model_version`
+**Multi-threshold evaluation:**
+Metrics are computed at thresholds 0.3, 0.5, and 0.7 to find optimal decision boundaries.
 
-Metrics are written to:
+**Per-regime breakdown:**
+Metrics can be segmented by market regime (e.g., "trending_up", "choppy") to identify when the model performs best.
+
+**Example output:**
+```
+Head         Th   Precision  Recall  F1     Accuracy
+flag         0.5  0.78       0.62    0.69   0.85
+breakout     0.5  0.81       0.55    0.65   0.87
+retest       0.5  0.60       0.40    0.48   0.82
+continuation 0.5  0.72       0.50    0.59   0.84
+```
+
+### Grad-CAM Visualization
+
+Grad-CAM (Gradient-weighted Class Activation Mapping) generates a 1D importance profile showing which time steps (bars) the model focuses on when making predictions.
+
+**How it works:**
+1. Captures activations from the last convolutional layer
+2. Computes gradients of the target head output w.r.t. activations
+3. Weights channels by gradient importance
+4. Creates a heatmap normalized to [0, 1]
+5. Upsamples to original sequence length (200 bars)
+
+**Usage:**
+```python
+from models.cnn_bullflag.gradcam import GradCAM1D
+
+gradcam = GradCAM1D(model, target_layer_name="conv4", device="cpu")
+cam = gradcam.generate_cam(x, target_head="sequence")  # Returns [200] tensor
+```
+
+The activation map is included in inference outputs and can be visualized as a heatmap overlay on price charts.
+
+## Usage Guide
+
+### Data Pipeline
+
+**1. Gather data:**
+```bash
+# From Binance API (real data)
+python scripts/gather_additional_data.py --source binance --limit 5000 --append
+
+# Generate synthetic data
+python scripts/gather_additional_data.py --source synthetic --limit 15000 --append
+
+# Output: data/dataset.npz with shape [N, 13, 200]
+```
+
+**2. Label windows:**
+```bash
+python scripts/label_windows.py --progress
+# Output: data/dataset_labeled.npz with X:[N,13,200] and y:[N,4]
+```
+
+**Dataset format:**
+- **X**: `[N, 13, 200]` — N windows × 13 channels × 200 bars
+- **y**: `[N, 4]` — Binary labels for [flag, breakout, retest, continuation]
+- **Channels**: open, high, low, close, volume, ema20, ema50, rsi14, vol_std20, volume_delta, body_norm, upper_wick, lower_wick
+
+**Labeling parameters:**
+Configure in `config.toml` `[labeler]` section:
+- `pattern_zone` — Last N bars where patterns must occur (default: 80)
+- `impulse_min_move_pct` — Minimum impulse move percentage
+- `flag_max_range_pct` — Maximum flag consolidation range
+- `breakout_min_pct` — Minimum breakout percentage
+- And more...
+
+### Training
+
+**Configure in `config.toml`:**
+```toml
+[data]
+train_x = "data/dataset_labeled.npz"
+train_y = "data/dataset_labeled.npz"
+val_x = "data/dataset_labeled.npz"
+val_y = "data/dataset_labeled.npz"
+
+[train]
+epochs = 20
+batch_size = 64
+learning_rate = 0.001
+
+[checkpoint]
+model_path = "models/cnn_bullflag/checkpoints/cnn_v1.pt"
+
+[paths]
+eval_dir = "models/cnn_bullflag"
+```
+
+**Run training:**
+```bash
+python scripts/train_real.py
+```
+
+**Outputs:**
+- Model checkpoint: `models/cnn_bullflag/checkpoints/cnn_v1.pt`
+- Training log: `models/cnn_bullflag/training_log.json`
+- Validation arrays: `models/cnn_bullflag/y_true.npy`, `y_probs.npy`
+
+### Inference
+
+**Configure in `config.toml`:**
+```toml
+[inference]
+input_dir = ""  # Directory with window files, or leave empty
+price_csv = ""  # CSV file path (alternative to input_dir)
+window_len = 200
+stride = 1
+symbol = "BTCUSDT"
+timeframe = "30m"
+output_jsonl = "models/cnn_bullflag/outputs.jsonl"
+enable_gradcam = true
+```
+
+**Run inference:**
+```bash
+python scripts/infer_real.py
+```
+
+**Output format (JSONL):**
+```json
+{
+  "window_id": "window_0001",
+  "symbol": "BTCUSDT",
+  "tf": "30m",
+  "window_start_ts": 1234567890,
+  "window_end_ts": 1234567890,
+  "scores": {
+    "flag_prob": 0.85,
+    "breakout_prob": 0.72,
+    "retest_prob": 0.45,
+    "continuation_prob": 0.38,
+    "sequence_score": 0.57
+  },
+  "activation_map": {
+    "indices": [0, 1, 2, ..., 199],
+    "intensities": [0.1, 0.2, 0.5, ..., 0.8]
+  },
+  "meta": {
+    "model_version": "cnn_bullflag_multihead_v1"
+  }
+}
+```
+
+### Evaluation
+
+**Compute metrics:**
+```bash
+python -m models.cnn_bullflag.eval_metrics \
+  --ytrue models/cnn_bullflag/y_true.npy \
+  --yprobs models/cnn_bullflag/y_probs.npy \
+  --regimes models/cnn_bullflag/regimes.npy \
+  --output-dir models/cnn_bullflag
+```
+
+**View metrics tables:**
+```bash
+python -m models.cnn_bullflag.report_metrics
+```
+
+**Outputs:**
 - `models/cnn_bullflag/test_multihead_metrics.json`
 - `models/cnn_bullflag/test_multihead_metrics_by_regime.json`
 
-Use the reporting CLI to print readable tables:
-- `python -m models.cnn_bullflag.report_metrics`
+### Visualization
 
-Integrating Your Own Model
-
-Replace the stub with your real multiâ€‘head CNN.
-
-- Ensure your model returns a dict with keys: `flag`, `breakout`, `retest`, `continuation` (each a scalar tensor or `[B,1]`).
-- Name the last convolutional layer you want to explain as `conv4` (or pass a custom name into GradCAM1D).
-- Example wiring:
-
-```
-from models.cnn_bullflag.infer import BullFlagCNNInfer, WindowMeta
-
-model = YourBullFlagCNN()
-infer = BullFlagCNNInfer(model=model, enable_gradcam=True, gradcam_target_layer="conv4")
-
-# Single window [C, L]
-result = infer(feature_window_np)
-
-# With schema wrapping
-meta = WindowMeta(window_id="abc", symbol="ES", timeframe="5m", start_ts=..., end_ts=...)
-row = infer.infer_with_schema(feature_window_np, meta)
+**Grad-CAM gallery:**
+```bash
+python scripts/plot_gallery.py \
+  --jsonl models/cnn_bullflag/outputs.jsonl \
+  --out-dir models/cnn_bullflag/plots/gallery \
+  --top-n 12 \
+  --sort-by sequence_score
 ```
 
-If your target layer has a different name, pass it to the class:
-- `GradCAM1D(model, target_layer_name="your_layer_name", device=...)`
+**Preview labels:**
+```bash
+python scripts/preview_labels.py --num-samples 6
+```
 
-Tips & Troubleshooting
+**ASCII activation preview:**
+```bash
+python scripts/gradcam_ascii.py
+```
 
-- Import errors when running scripts:
-  - Run from repo root and/or set `export PYTHONPATH=.`
-- Gradâ€‘CAM returns a flat/nearâ€‘zero map:
-  - This is expected for random weights; try after training or use the mock trainer (`scripts/full_cycle_mock.py`).
-- Metrics look odd at fixed thresholds:
-  - Use the `scripts/inspect_metrics.py` helper and consider tuning thresholds per head based on validation.
-- Performance:
-  - Gradâ€‘CAM does an extra backward pass; gate it for topâ€‘K windows or only for debugging.
+## Web Dashboard
 
-Requirements
+The dashboard provides real-time visualization of training progress, label statistics, predictions, and Grad-CAM heatmaps.
+
+**Start dashboard:**
+```bash
+python scripts/dashboard.py
+# Open http://localhost:5000
+```
+
+**Features:**
+- **Training Progress** — Loss curves and training metrics
+- **Label Statistics** — Distribution of labels with prevalence percentages
+- **Sample Predictions** — Top predictions sorted by sequence score
+- **Grad-CAM Heatmaps** — Click any sample to view activation heatmap
+
+**Configuration:**
+- Reads from `config.toml` automatically
+- Auto-refreshes every 5 seconds
+- Custom port: `python scripts/dashboard.py --port 8080`
+
+**Data requirements:**
+- Training log: `{eval_dir}/training_log.json`
+- Evaluation arrays: `{eval_dir}/y_true.npy`, `y_probs.npy`
+- Inference outputs: JSONL file with predictions
+
+## Architecture
+
+### Repository Structure
+
+```
+TradingCNN/
+├── models/cnn_bullflag/
+│   ├── model.py              # Multi-head CNN architecture
+│   ├── gradcam.py            # Grad-CAM 1D implementation
+│   ├── infer.py               # Inference wrapper with Grad-CAM
+│   ├── eval_metrics.py       # Metrics computation
+│   ├── report_metrics.py     # CLI for printing metrics tables
+│   └── schema.py             # JSON output schema builder
+├── scripts/
+│   ├── train_real.py         # Training script
+│   ├── infer_real.py          # Inference script
+│   ├── label_windows.py      # Rule-based labeling pipeline
+│   ├── gather_additional_data.py  # Data collection script
+│   ├── dashboard.py           # Web dashboard server
+│   ├── preview_labels.py     # Label visualization
+│   └── plot_gallery.py       # Grad-CAM gallery generator
+├── utils/
+│   └── metrics.py            # Per-head metrics utilities
+├── config.toml               # Configuration file
+└── requirements.txt          # Python dependencies
+```
+
+### Model Architecture
+
+- **Input**: `[B, 13, 200]` — Batch of windows with 13 channels and 200 time steps
+- **Architecture**: 1D CNN with multiple convolutional blocks
+- **Output**: Four heads (flag, breakout, retest, continuation) with sigmoid activations
+- **Grad-CAM target**: Last convolutional layer (`conv4`)
+
+### Data Flow
+
+1. **Raw data** → OHLCV candles (BTCUSDT 30m)
+2. **Feature engineering** → Compute technical indicators (EMA, RSI, volatility)
+3. **Windowing** → Sliding windows of 200 bars
+4. **Labeling** → Rule-based detection of bull flag patterns
+5. **Training** → Multi-head binary classification
+6. **Inference** → Generate predictions + Grad-CAM heatmaps
+7. **Evaluation** → Per-head metrics and visualization
+
+## Configuration
+
+All settings are in `config.toml`:
+
+```toml
+[system]
+threads = 6              # CPU threads (0 = auto-detect)
+show_progress = true
+
+[train]
+epochs = 20
+batch_size = 64
+learning_rate = 0.001
+
+[data]
+train_x = "data/dataset_labeled.npz"
+train_y = "data/dataset_labeled.npz"
+val_x = "data/dataset_labeled.npz"
+val_y = "data/dataset_labeled.npz"
+
+[labeler]
+pattern_zone = 80
+impulse_min_move_pct = 0.05
+flag_max_range_pct = 0.02
+breakout_min_pct = 0.015
+# ... more parameters
+
+[inference]
+window_len = 200
+stride = 1
+enable_gradcam = true
+output_jsonl = "models/cnn_bullflag/outputs.jsonl"
+```
+
+## Troubleshooting
+
+**Import errors:**
+- Run scripts from project root: `python scripts/train_real.py`
+- Set `PYTHONPATH=.` if needed: `export PYTHONPATH=.`
+
+**Grad-CAM returns flat/near-zero maps:**
+- Expected for random/untrained weights
+- Train the model first or use trained checkpoint
+- Check that target layer name matches (`conv4`)
+
+**Metrics look odd:**
+- Tune thresholds per head based on validation set
+- Use `scripts/inspect_metrics.py` for calibration analysis
+- Check label distribution: `python scripts/label_windows.py`
+
+**Performance issues:**
+- Grad-CAM adds backward pass overhead — disable for full sweeps
+- Use CPU tuning: `python scripts/cpu_tuning.py`
+- Set `OMP_NUM_THREADS` and `MKL_NUM_THREADS` environment variables
+
+**No positive labels:**
+- Adjust `[labeler]` parameters in `config.toml`
+- Check label report: `models/cnn_bullflag/label_report.txt`
+- Target prevalence: 1-5% per head
+
+**Dashboard not showing data:**
+- Ensure training has run: `python scripts/train_real.py`
+- Check eval directory path in `config.toml`
+- Verify inference outputs exist: `models/cnn_bullflag/outputs.jsonl`
+
+## Requirements
 
 - Python 3.9+
-- NumPy (2.0+ supported)
-- PyTorch 2.x (CPU or CUDA build)
-- Matplotlib only if you add your own visual plots (not required by included scripts)
+- NumPy 2.0+
+- PyTorch 2.x (CPU or CUDA)
+- Flask (for dashboard)
+- pandas (for data processing)
+- matplotlib (for visualization)
 
-Install core packages with:
-- `pip install -r requirements.txt`
-- Then install PyTorch with the appropriate index URL as shown in Quickstart.
+Install with:
+```bash
+pip install -r requirements.txt
+pip install torch --index-url https://download.pytorch.org/whl/cpu  # or cu121 for GPU
+```
 
-Next Steps
+## Next Steps
 
-- Swap in your trained model and data loader to replace the stub network.
-- Store schema rows into your datastore (Parquet/SQLite/etc.) and overlay `activation_map` on charts.
-- Add ROCâ€‘AUC/PRâ€‘AUC to metrics if needed; extend reporting CLI to include calibration plots.
+- **Improve labeling**: Tune `[labeler]` parameters to achieve 1-5% prevalence per head
+- **Train model**: Replace model stub with full architecture and train on labeled data
+- **Tune thresholds**: Use validation metrics to find optimal decision thresholds per head
+- **Extend metrics**: Add ROC-AUC, PR-AUC, calibration plots
+- **Production integration**: Store outputs in datastore (Parquet/SQLite) and overlay on charts
 
-Real Training + Inference (Config-driven)
+## References
 
-- Configure paths and hyperparameters in `config.toml`:
-  - `[data]`: `train_x`, `train_y`, `val_x`, `val_y` (NPZ/NPY)
-  - `[train]`: `epochs` or `steps`, `batch_size`, `learning_rate`
-  - `[checkpoint]`: `model_path`
-  - `[inference]`: set either `input_dir` (windows) or `price_csv` (CSV mode), plus `output_jsonl`
-  - `[paths]`: `eval_dir` (where y_true/y_probs + training_log.json are saved)
-
-- Canonical dataset format (NPZ):
-  - `X`: float32 of shape `[N, C, L]`
-  - `y`: int/bool/float of shape `[N, 4]` (binary labels per head)
-  - `regimes` (optional): shape `[N]` strings
-
-- Train:
-  - `python scripts/train_real.py`
-
-- Inference (JSONL with optional Grad-CAM):
-  - `python scripts/infer_real.py`
-
-- Evaluate metrics from saved arrays (compatible with report CLI):
-  - `python -m models.cnn_bullflag.eval_metrics --ytrue models/cnn_bullflag/y_true.npy --yprobs models/cnn_bullflag/y_probs.npy --output-dir models/cnn_bullflag`
-  - Print tables: `python -m models.cnn_bullflag.report_metrics`
-
-- Build a Grad-CAM gallery from inference output:
-  - `python scripts/plot_gallery.py --jsonl models/cnn_bullflag/example_cnn_outputs.jsonl --out-dir models/cnn_bullflag/plots/gallery --top-n 12 --sort-by sequence_score`
+- **Per-head metrics**: See `utils/metrics.py` for implementation
+- **Grad-CAM**: See `models/cnn_bullflag/gradcam.py` for 1D implementation
+- **Labeling spec**: See `config.toml` `[labeler]` section for all parameters
+- **Sequence score**: Geometric mean of all four head probabilities
